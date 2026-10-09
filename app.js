@@ -419,6 +419,53 @@ function bindEditorForms() { const productForm = $('#productEditForm'); if (prod
 async function saveProductEdit(form) { const data = Object.fromEntries(new FormData(form)); const product = products.find(item => item.id === Number(data.id)); if (!product) return showToast('Product পাওয়া যায়নি'); const price = Number(data.price); const old = Number(data.old); if (!data.name?.trim() || !data.category || !Number.isFinite(price) || !Number.isFinite(old) || !Number.isFinite(Number(data.stock))) return showToast('Product-এর সব তথ্য পূরণ করুন'); try { const uploaded = await uploadProductMediaFromForm(form); const requestedPrimary = String(data.image || '').trim(); let images = productImages(product); if (requestedPrimary && requestedPrimary !== primaryProductImage(product)) images = [requestedPrimary, ...images.filter(url => url !== requestedPrimary)]; images = [...images, ...uploaded.images]; if (!images.length) return showToast('কমপক্ষে একটি product image দিন'); const videos = [...productVideos(product), ...uploaded.videos]; const previousCategory = product.category; Object.assign(product, normaliseProductMedia({name:data.name.trim(),price,old,discount:old ? `-${Math.round((1 - price / old) * 100)}%` : '',rating:product.rating || '4.8',category:data.category,stock:Number(data.stock),image:images[0],images,videos,description:data.description || '',sizeGuide:parseProductSizeGuide(data.sizeGuideRemoveImage === 'on' ? '' : (uploaded.sizeGuideImage || product.sizeGuide?.image || ''),data.sizeGuideRows),imageFit:readProductImageFit(data),imageFit:readProductImageFit(data)})); syncProductCategoryMembership(product, previousCategory); saveState(); closeModal('ordersModal'); renderProducts(); renderAdmin(); showToast('Product update হয়েছে'); } catch (error) { showToast(error.message ||async function createProductFromForm(form) { const data = Object.fromEntries(new FormData(form)); const price = Number(data.price); const old = Number(data.old); if (!data.name?.trim() || !data.category || !Number.isFinite(price) || !Number.isFinite(old) || !Number.isFinite(Number(data.stock))) return showToast('Product-এর সব তথ্য পূরণ করুন'); try { const uploaded = await uploadProductMediaFromForm(form); const manualImage = String(data.image || '').trim(); const images = [...(manualImage ? [manualImage] : []), ...uploaded.images]; if (!images.length) return showToast('কমপক্ষে একটি product image upload বা URL দিন'); const newProduct = normaliseProductMedia({id:Date.now(),name:data.name.trim(),price,old,discount:old ? `-${Math.round((1 - price / old) * 100)}%` : '',rating:'4.8',category:data.category,stock:Number(data.stock),image:images[0],images,videos:uploaded.videos,description:data.description || '',imageFit:readProductImageFit(data),sizeGuide:parseProductSizeGuide(uploaded.sizeGuideImage,data.sizeGuideRows)}); products.unshift(newProduct); syncProductCategoryMembership(newProduct); saveState(); renderProducts(); renderAdmin(); showToast('নতুন পণ্য প্রকাশিত হয়েছে'); } catch (error) { showToast(error.message || 'Product media upload হয়নি'); } }
 | 'Product media upload হয়নি'); } }
 
+async function createProductFromForm(form) {
+  const data = Object.fromEntries(new FormData(form));
+  const price = Number(data.price);
+  const old = Number(data.old);
+
+  if (!data.name?.trim() || !data.category || !Number.isFinite(price) || !Number.isFinite(old) || !Number.isFinite(Number(data.stock))) {
+    return showToast('Product-এর সব তথ্য পূরণ করুন');
+  }
+
+  try {
+    const uploaded = await uploadProductMediaFromForm(form);
+    const manualImage = String(data.image || '').trim();
+    const images = [...(manualImage ? [manualImage] : []), ...uploaded.images];
+
+    if (!images.length) {
+      return showToast('কমপক্ষে একটি product image upload বা URL দিন');
+    }
+
+    const product = normaliseProductMedia({
+      id:Date.now(),
+      name:data.name.trim(),
+      price,
+      old,
+      discount:old ? `-${Math.round((1 - price / old) * 100)}%` : '',
+      rating:'4.8',
+      category:data.category,
+      stock:Number(data.stock),
+      image:images[0],
+      images,
+      videos:uploaded.videos,
+      description:data.description || '',
+      imageFit:readProductImageFit(data),
+      sizeGuide:parseProductSizeGuide(uploaded.sizeGuideImage, data.sizeGuideRows)
+    });
+
+    products.unshift(product);
+    syncProductCategoryMembership(product);
+    await saveState();
+    renderProducts();
+    renderAdmin();
+    showToast('নতুন পণ্য প্রকাশিত হয়েছে');
+  } catch (error) {
+    console.error('Product publish failed:', error);
+    showToast(error.message || 'Product publish হয়নি');
+  }
+}
+
 function saveManagedCategoryForm(form) {
   const data = Object.fromEntries(new FormData(form));
   const id = String(data.id || '').trim();
