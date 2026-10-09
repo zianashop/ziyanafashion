@@ -1352,6 +1352,134 @@ function renderCheckout(draft = checkoutDraft) {
   $('#checkoutContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">SECURE CHECKOUT</p><h2>অর্ডার সম্পন্ন করুন</h2><p>${cart.length}টি পণ্য আপনার ব্যাগে আছে।</p></div><form id="checkoutForm" class="checkout-layout"><div class="stack-form"><input name="name" value="${escapeHtml(draftName)}" placeholder="পুরো নাম" required><input name="phone" value="${escapeHtml(draftPhone)}" placeholder="মোবাইল নম্বর" required><textarea name="address" placeholder="ডেলিভারি ঠিকানা" required>${escapeHtml(draftAddress)}</textarea><select name="district" required>${districtOptions}</select><select name="payment" required><option value="cod" ${draft.payment === 'cod' ? 'selected' : ''}>Cash on Delivery</option><option value="bkash" ${draft.payment === 'bkash' ? 'selected' : ''}>bKash</option><option value="rocket" ${draft.payment === 'rocket' ? 'selected' : ''}>Rocket</option><option value="card" disabled>Card (শীঘ্রই আসছে)</option></select><div class="coupon-row"><input id="couponInput" value="${escapeHtml(appliedCoupon?.code || '')}" placeholder="Coupon code"><button type="button" class="outline-button" data-action="apply-coupon">${appliedCoupon ? 'Change' : 'Apply'}</button>${couponMarkup}</div><p id="couponMessage" class="coupon-message">${couponMessage}</p></div><aside class="checkout-summary"><h3>Order summary</h3>${itemsMarkup}${giftMarkup}<hr><div><span>Subtotal</span><b>${money(totals.subtotal)}</b></div><div><span>Discount</span><b class="discount-text">${totals.discount ? `-${money(totals.discount)}` : '৳০'}</b></div><div><span>Shipping charge</span><b>${totals.shipping ? money(totals.shipping) : 'FREE'}</b></div><div class="total-row"><span>Total</span><strong>${money(totals.total)}</strong></div><button class="primary-button" type="submit">অর্ডার কনফার্ম করুন <span>→</span></button></aside></form>`;
 }
 function ensureCheckoutRegionField() {}
+
+let adminUserLoadRequest = 0;
+
+function renderAdminUsers(usersToRender, state = 'ready', emailSyncPending = false) {
+  const section = [...document.querySelectorAll('#adminContent .admin-section')]
+    .find(item => item.querySelector('h3')?.textContent.trim() === 'User list');
+  if (!section) return;
+
+  const count = section.querySelector('.section-inline span');
+  const list = section.querySelector('.admin-list');
+  const refreshButton = section.querySelector('[data-refresh-admin-users]');
+  if (!count || !list) return;
+
+  let notice = section.querySelector('[data-admin-user-email-notice]');
+  if (state === 'loading' || state === 'error' || !emailSyncPending) {
+    notice?.remove();
+    notice = null;
+  } else if (!notice) {
+    notice = document.createElement('p');
+    notice.className = 'form-help';
+    notice.dataset.adminUserEmailNotice = '';
+    list.before(notice);
+  }
+
+  if (notice) {
+    notice.textContent = 'Email sync মানে Auth-এর email profile-এ সংরক্ষণ করা। Supabase Dashboard → SQL Editor-এ updated supabase-schema.sql পুরোটা Run করলে পুরোনো email পূরণ হবে এবং নতুন email sync হবে।';
+  }
+
+  if (state === 'loading') {
+    count.textContent = 'Loading...';
+    list.innerHTML = '<div class="empty-state">Supabase থেকে users load হচ্ছে...</div>';
+    if (refreshButton) refreshButton.disabled = true;
+    return;
+  }
+
+  if (refreshButton) refreshButton.disabled = false;
+
+  if (state === 'error') {
+    count.textContent = 'Load failed';
+    list.innerHTML = '<div class="empty-state">Supabase থেকে user list আনা যায়নি। আবার চেষ্টা করুন।</div>';
+    return;
+  }
+
+  const customers = usersToRender.filter(user => user.role === 'customer');
+  count.textContent = `${customers.length} customers`;
+  list.innerHTML = customers.length
+    ? customers.map(user => `<div class="admin-list-row"><span><b>${escapeHtml(user.name || 'নাম দেওয়া হয়নি')} <small class="role-label">customer</small></b><small>${escapeHtml(user.email || (emailSyncPending ? 'Email sync প্রয়োজন' : 'No email'))} · ${escapeHtml(user.phone || 'No mobile')} · ID: ${escapeHtml(user.id)}</small></span></div>`).join('')
+    : '<div class="empty-state">Supabase-এ কোনো customer পাওয়া যায়নি।</div>';
+}
+
+async function loadAdminUsers() {
+  const requestId = ++adminUserLoadRequest;
+  const client = window.laibaSupabase;
+  if (!client) return;
+
+  renderAdminUsers([], 'loading');
+
+  try {
+    const sessionResult = await client.auth.getSession();
+    if (sessionResult.error) {
+      throw new Error(`Admin session check failed: ${sessionResult.error.message}`);
+    }
+
+    const session = sessionResult.data.session;
+    if (!session?.user || currentUser?.id !== session.user.id || currentUser.role !== 'admin') {
+      throw new Error('Supabase admin session পাওয়া যায়নি। আবার admin login করুন।');
+    }
+
+    const roleResult = await client
+      .from('profiles')
+      .select('role')
+      .eq('id', session.user.id)
+      .single();
+
+    if (roleResult.error) {
+      throw new Error(`Admin profile check failed: ${roleResult.error.message}`);
+    }
+
+    if (roleResult.data?.role !== 'admin') {
+      throw new Error('এই Supabase account-এর admin permission নেই।');
+    }
+
+    const pageSize = 500;
+    const profiles = [];
+    let emailColumnAvailable = true;
+    let offset = 0;
+
+    while (true) {
+      const result = await client
+        .from('profiles')
+        .select(emailColumnAvailable ? 'id,name,email,phone,role,created_at' : 'id,name,phone,role,created_at')
+        .eq('role', 'customer')
+        .order('created_at', {ascending:false})
+        .order('id', {ascending:true})
+        .range(offset, offset + pageSize - 1);
+
+      if (result.error) {
+        const missingEmailColumn = emailColumnAvailable
+          && ['42703', 'PGRST204'].includes(result.error.code)
+          && /email/i.test(result.error.message);
+
+        if (missingEmailColumn) {
+          emailColumnAvailable = false;
+          profiles.length = 0;
+          offset = 0;
+          continue;
+        }
+
+        throw new Error(`Supabase user list load failed: ${result.error.message}`);
+      }
+
+      const page = result.data || [];
+      profiles.push(...page);
+      if (page.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    if (requestId !== adminUserLoadRequest || currentUser?.id !== session.user.id) return;
+
+    renderAdminUsers(profiles, 'ready', !emailColumnAvailable);
+  } catch (error) {
+    if (requestId !== adminUserLoadRequest) return;
+    console.error('Admin users load failed:', error);
+    renderAdminUsers([], 'error');
+    showToast(error.message || 'Supabase থেকে user list আনা যায়নি');
+  }
+}
+
 function renderAdmin() {
   if (!currentUser || currentUser.role !== 'admin') { pendingAdmin = true; currentUser = null; write('laiba_current_user', null); return openAuth('login'); }
   const revenue = orders.reduce((sum, order) => sum + order.total, 0);
@@ -1364,6 +1492,20 @@ function renderAdmin() {
   $('#adminContent').insertAdjacentHTML('beforeend', `<section class="admin-section"><h3>Hero banner</h3><form id="heroForm" class="admin-form"><input name="tagTop" value="${escapeHtml(heroSettings.tagTop)}" placeholder="Top label" required><input name="tagBottom" value="${escapeHtml(heroSettings.tagBottom)}" placeholder="Bottom label" required><input name="image" type="url" value="${escapeHtml(heroSettings.image)}" placeholder="Hero image URL" required><input name="cardTitle" value="${escapeHtml(heroSettings.cardTitle)}" placeholder="Floating card title" required><input name="cardOffer" value="${escapeHtml(heroSettings.cardOffer)}" placeholder="Offer text" required><button class="primary-button" type="submit">Hero banner save করুন</button></form></section>`);
   $('#adminContent').insertAdjacentHTML('beforeend', `<section class="admin-section"><h3>Ziyana Shop products</h3><form id="mallForm" class="admin-form"><p class="form-help">Ziyana Shop-এ দেখানোর products tick করুন। কোনোটি select না করলে Fashion ও Beauty-এর products দেখাবে।</p><fieldset class="campaign-picker"><legend>Ziyana Shop product selection</legend>${products.map(product => `<label><input type="checkbox" name="mallProducts" value="${product.id}" ${(mallSettings.productIds || []).map(Number).includes(Number(product.id)) ? 'checked' : ''}><span>${escapeHtml(product.name)}</span><small>${money(product.price)}</small></label>`).join('')}</fieldset><button class="primary-button" type="submit">Ziyana Shop update করুন</button></form></section>`);
   $('#adminContent').insertAdjacentHTML('beforeend', `<section class="admin-section"><h3>Category Management</h3><div class="category-admin-tools"><form id="categoryForm" class="admin-form"><input type="hidden" name="id"><input name="name" placeholder="Category name" required><input name="image" type="url" placeholder="Category image URL"><label><input type="checkbox" name="active" checked> Active category</label><div class="category-product-picker"><b>এই category-তে products</b><div id="categoryProductPicker"></div></div><div class="category-subcategory-tools"><b>Subcategories</b><div id="categorySubcategoryList"></div><div class="two-fields"><input name="newSubcategory" placeholder="নতুন subcategory"><input name="newSubcategoryImage" type="url" placeholder="Subcategory image URL (optional)"></div><button class="outline-button" type="button" data-add-subcategory>Add subcategory</button></div><button class="primary-button" type="submit">Category save করুন</button></form><div class="admin-list" id="adminCategoryList">${(Array.isArray(categories) ? categories : defaultCategories).map(category => `<div class="admin-list-row"><span><b>${escapeHtml(category.name)}</b><small>${(category.subcategories || []).length} subcategory · ${Array.isArray(category.productIds) ? category.productIds.length : 0} products · ${category.active === false ? 'Hidden' : 'Active'}</small></span><span class="row-actions"><button class="outline-button" data-edit-category="${escapeHtml(category.id)}">Edit</button><button class="outline-button danger-button" data-delete-category="${escapeHtml(category.id)}">Remove</button></span></div>`).join('')}</div></div></section>`);
+
+  if (window.laibaSupabase) {
+    const userSection = [...document.querySelectorAll('#adminContent .admin-section')]
+      .find(section => section.querySelector('h3')?.textContent.trim() === 'User list');
+    const userHeader = userSection?.querySelector('.section-inline');
+    userHeader?.insertAdjacentHTML(
+      'beforeend',
+      '<button type="button" class="outline-button" data-refresh-admin-users>Refresh users</button>'
+    );
+    userHeader?.querySelector('[data-refresh-admin-users]')
+      ?.addEventListener('click', () => void loadAdminUsers());
+    renderAdminUsers([], 'loading');
+    void loadAdminUsers();
+  }
 
   setupAdminWorkspace();
   openModal('adminModal');
