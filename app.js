@@ -535,6 +535,7 @@ async function persistCloudOrder(order) {
     id:order.cloudId,
     user_id:currentUser.id,
     customer:order.customer,
+    district:order.district || '',
     payment:order.payment,
     items:order.items,
     gift:order.gift,
@@ -577,6 +578,7 @@ async function loadCloudOrders() {
     cloudId: order.id,
     userId: order.user_id,
     customer: order.customer || {},
+    district: order.district || '',
     payment: order.payment || 'cod',
     items: Array.isArray(order.items) ? order.items : [],
     gift: order.gift || null,
@@ -589,6 +591,11 @@ async function loadCloudOrders() {
     courierName: order.courier_name || '',
     bookingNumber: order.booking_number || '',
     trackingUrl: order.tracking_url || '',
+    invoiceNumber: order.invoice_number || '',
+    consignmentId: order.consignment_id || '',
+    trackingCode: order.tracking_code || '',
+    courierStatus: order.courier_status || '',
+    courierError: order.courier_error || '',
     stockDeducted: Boolean(order.stock_deducted),
     stockRestored: Boolean(order.stock_restored),
     createdAt: order.created_at
@@ -1326,7 +1333,225 @@ if (!window.__anonymousSupportInboxWrapped) {
 
 function renderOrderTracker() { $('#ordersContent').innerHTML = `<div class="info-page"><p class="eyebrow">ORDER TRACKER</p><h2>আপনার order কোথায়?</h2><p>Order number, mobile অথবা email দিয়ে খুঁজুন।</p><div class="track-row"><input id="publicTrackInput" placeholder="Order ID / mobile / email"><button class="primary-button" data-action="public-track-order">Track order</button></div><div id="publicTrackResult"></div></div>`; openModal('ordersModal'); }
 function openOrders() { if (!currentUser) return openAuth('login'); renderOrders(); openModal('ordersModal'); }
-function showAdminOrder(orderId) { const order = orders.find(item => item.id === String(orderId)); if (!order) return; const shipping = order.shipping ?? Math.max(0, order.total - order.subtotal + order.discount); $('#ordersContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">ORDER DETAILS</p><h2>Order #${escapeHtml(order.id)}</h2><p>${escapeHtml(order.createdAt)} · ${escapeHtml(order.statusLabel)}</p></div><div class="order-detail-grid"><div><small>Customer name</small><b>${escapeHtml(order.customer.name)}</b></div><div><small>Mobile number</small><b>${escapeHtml(order.customer.phone)}</b></div><div class="order-address"><small>Delivery address</small><b>${escapeHtml(order.customer.address)}</b></div><div><small>Payment</small><b>${escapeHtml(order.payment)}</b></div></div><div class="order-detail-items">${order.items.map(item => `<div><span>${escapeHtml(item.name)} × ${item.quantity}</span><b>${money(item.price * item.quantity)}</b></div>`).join('')}</div><div class="checkout-summary detail-summary"><div><span>Subtotal</span><b>${money(order.subtotal)}</b></div><div><span>Discount</span><b class="discount-text">-${money(order.discount)}</b></div><div><span>Shipping charge</span><b>${shipping ? money(shipping) : 'FREE'}</b></div><div class="total-row"><span>Total</span><strong>${money(order.total)}</strong></div></div>`; openModal('ordersModal'); }
+function showAdminOrder(orderId) {
+  const order = orders.find(item => item.id === String(orderId));
+  if (!order) return;
+  const shipping = order.shipping ?? Math.max(0, order.total - order.subtotal + order.discount);
+  const isAdmin = currentUser?.role === 'admin';
+  const courierInfo = order.courierName || order.bookingNumber || order.courierStatus
+    ? `<div class="order-courier-info"><b>Courier</b><span>${escapeHtml(order.courierName || 'Not selected')} · ${escapeHtml(order.courierStatus || 'not booked')}</span>${order.consignmentId || order.bookingNumber ? `<span>Consignment: ${escapeHtml(order.consignmentId || order.bookingNumber)}</span>` : ''}${order.trackingCode ? `<span>Tracking code: ${escapeHtml(order.trackingCode)}</span>` : ''}${order.courierError ? `<span class="courier-error">${escapeHtml(order.courierError)}</span>` : ''}</div>`
+    : '';
+  const courierActions = isAdmin
+    ? `<div class="courier-actions"><b>Invoice: ${escapeHtml(order.invoiceNumber || `ZS-${String(order.cloudId || order.id).replace(/[^a-z0-9]/gi, '').slice(-12).toUpperCase()}`)}</b><div class="row-actions"><button type="button" class="outline-button" data-print-order="${escapeHtml(order.id)}" data-print-kind="invoice">Print invoice</button><button type="button" class="outline-button" data-print-order="${escapeHtml(order.id)}" data-print-kind="label" ${code39Barcode(order.trackingCode) ? '' : 'disabled title="A supported Steadfast tracking code is required for a barcode label"'}>Print parcel label</button>${order.status === 'confirmed' && !order.consignmentId && !['booking', 'unknown'].includes(order.courierStatus) ? `<button type="button" class="primary-button" data-steadfast-action="create" data-order-id="${escapeHtml(order.id)}">Send to Steadfast</button>` : ''}${order.consignmentId || order.bookingNumber || ['booking', 'unknown'].includes(order.courierStatus) ? `<button type="button" class="outline-button" data-steadfast-action="status" data-order-id="${escapeHtml(order.id)}">Check courier status</button>` : ''}<button type="button" class="outline-button" data-edit-tracking="${escapeHtml(order.id)}">Edit courier details</button></div><p class="form-help">Booking only starts after you click Send to Steadfast. If a request times out, verify it in the merchant panel before retrying.</p></div>`
+    : '';
+  $('#ordersContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">ORDER DETAILS</p><h2>Order #${escapeHtml(order.id)}</h2><p>${escapeHtml(order.createdAt || '')} · ${escapeHtml(order.statusLabel || order.status || '')}</p></div><div class="order-detail-grid"><div><small>Customer name</small><b>${escapeHtml(order.customer?.name || '')}</b></div><div><small>Mobile number</small><b>${escapeHtml(order.customer?.phone || '')}</b></div><div class="order-address"><small>Delivery address</small><b>${escapeHtml(order.customer?.address || '')}</b></div><div><small>Payment</small><b>${escapeHtml(order.payment || '')}</b></div></div><div class="order-detail-items">${(order.items || []).map(item => `<div><span>${escapeHtml(item.name)} × ${item.quantity}</span><b>${money(item.price * item.quantity)}</b></div>`).join('')}</div><div class="checkout-summary detail-summary"><div><span>Subtotal</span><b>${money(order.subtotal)}</b></div><div><span>Discount</span><b class="discount-text">-${money(order.discount)}</b></div><div><span>Shipping charge</span><b>${shipping ? money(shipping) : 'FREE'}</b></div><div class="total-row"><span>Total</span><strong>${money(order.total)}</strong></div></div>${courierInfo}${courierActions}`;
+  openModal('ordersModal');
+}
+
+const code39Patterns = {
+  '*':'nwnnwnwnn','0':'nnnwwnwnn','1':'wnnwnnnnw','2':'nnwwnnnnw','3':'wnwwnnnnn','4':'nnnwwnnnw',
+  '5':'wnnwwnnnn','6':'nnwwwnnnn','7':'nnnwnnwnw','8':'wnnwnnwnn','9':'nnwwnnwnn',
+  A:'wnnnnwnnw',B:'nnwnnwnnw',C:'wnwnnwnnn',D:'nnnnwwnnw',E:'wnnnwwnnn',
+  F:'nnwnwwnnn',G:'nnnnnwwnw',H:'wnnnnwwnn',I:'nnwnnwwnn',J:'nnnnwwwnn',
+  K:'wnnnnnnww',L:'nnwnnnnww',M:'wnwnnnnwn',N:'nnnnwnnww',O:'wnnnwnnwn',
+  P:'nnwnwnnwn',Q:'nnnnnnwww',R:'wnnnnnwwn',S:'nnwnnnwwn',T:'nnnnwnwwn',
+  U:'wwnnnnnnw',V:'nwwnnnnnw',W:'wwwnnnnnn',X:'nwnnwnnnw',Y:'wwnnwnnnn',
+  Z:'nwwnwnnnn','-':'nwnnnnwnw','.':'wwnnnnwnn',' ':'nwwnnnwnn',
+  '$':'nwnwnwnnn','/':'nwnwnnnwn','+':'nwnnnwnwn','%':'nnnwnwnwn'
+};
+
+function code39Barcode(value) {
+  const text = String(value || '').toUpperCase();
+  if (!text || [...text].some(character => !code39Patterns[character])) return '';
+  const encoded = `*${text}*`;
+  let cursor = 10;
+  const bars = [];
+  for (const character of encoded) {
+    const pattern = code39Patterns[character];
+    [...pattern].forEach((width, index) => {
+      const units = width === 'w' ? 5 : 2;
+      if (index % 2 === 0) bars.push(`<rect x="${cursor}" y="2" width="${units}" height="54"/>`);
+      cursor += units + 1;
+    });
+    cursor += 2;
+  }
+  return `<svg class="order-barcode" role="img" aria-label="Barcode ${escapeHtml(text)}" viewBox="0 0 ${cursor + 8} 70" xmlns="http://www.w3.org/2000/svg">${bars.join('')}<text x="50%" y="67" text-anchor="middle" font-size="8">${escapeHtml(text)}</text></svg>`;
+}
+
+function printOrderDocument(order, kind) {
+  const invoiceNumber = order.invoiceNumber || `ZS-${String(order.cloudId || order.id).replace(/[^a-z0-9]/gi, '').slice(-12).toUpperCase()}`;
+  const isLabel = kind === 'label';
+  const barcodeValue = isLabel ? order.trackingCode : invoiceNumber;
+  const barcode = barcodeValue ? code39Barcode(barcodeValue) : '';
+  const popup = window.open('', '_blank');
+  if (!popup) return showToast('Print window blocked; allow pop-ups for this site');
+  popup.opener = null;
+
+  const itemRows = (order.items || []).map(item => `<tr><td>${escapeHtml(item.name)} × ${item.quantity}</td><td>${money(item.price * item.quantity)}</td></tr>`).join('');
+  const page = isLabel
+    ? `<main class="label"><p>ZIYANA SHOP · MERCHANT PARCEL LABEL</p><h1>${escapeHtml(order.customer?.name || '')}</h1><h2>${escapeHtml(order.customer?.phone || '')}</h2><p>${escapeHtml(order.customer?.address || '')}</p><hr><p>Invoice: ${escapeHtml(invoiceNumber)}</p><p>Consignment: ${escapeHtml(order.consignmentId || order.bookingNumber || 'Not booked')}</p><h2>Tracking code: ${escapeHtml(order.trackingCode || 'Not available')}</h2>${barcode || '<p>Barcode unavailable: tracking code is missing or contains unsupported characters.</p>'}<p>${(order.items || []).map(item => `${escapeHtml(item.name)} × ${item.quantity}`).join('<br>')}</p></main>`
+    : `<main class="invoice"><header><h1>Ziyana Shop</h1><p>Customer invoice</p></header><section><b>Invoice:</b> ${escapeHtml(invoiceNumber)}<br><b>Order:</b> ${escapeHtml(order.id)}<br><b>Date:</b> ${escapeHtml(order.createdAt || '')}</section><section><b>Customer:</b> ${escapeHtml(order.customer?.name || '')}<br><b>Phone:</b> ${escapeHtml(order.customer?.phone || '')}<br><b>Address:</b> ${escapeHtml(order.customer?.address || '')}</section><table><thead><tr><th>Product</th><th>Amount</th></tr></thead><tbody>${itemRows}</tbody></table><p>Subtotal: ${money(order.subtotal)}<br>Discount: -${money(order.discount)}<br>Shipping: ${money(order.shipping || 0)}<br><b>Total: ${money(order.total)}</b></p>${barcode || '<p>Invoice barcode unavailable.</p>'}</main>`;
+
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${isLabel ? 'Parcel label' : 'Invoice'} ${escapeHtml(invoiceNumber)}</title><style>*{box-sizing:border-box}body{font:14px Arial,sans-serif;color:#111;margin:0;padding:24px}.invoice{max-width:720px;margin:auto}.label{width:100mm;min-height:150mm;margin:auto}header{text-align:center;border-bottom:2px solid #111}section{margin:18px 0;line-height:1.7}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid #aaa}.order-barcode{display:block;width:100%;max-width:520px;height:auto;margin:18px auto}.label .order-barcode{max-width:90mm}@media print{body{padding:0}.invoice{max-width:none}.label{margin:0}}</style></head><body>${page}<script>window.addEventListener('load',()=>window.print())<\/script></body></html>`);
+  popup.document.close();
+}
+
+function findOrderByLookup(value) {
+  const query = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!query) return null;
+  return orders.find(order => [
+    order.id,
+    order.cloudId,
+    order.invoiceNumber,
+    order.trackingCode,
+    order.consignmentId,
+    order.bookingNumber,
+    order.customer?.phone,
+    order.customer?.email
+  ].some(value => String(value || '').trim().toLowerCase().replace(/\s+/g, '') === query)) || null;
+}
+
+async function handleSteadfastAction(button) {
+  const client = window.laibaSupabase;
+  if (!client || currentUser?.role !== 'admin') return showToast('Admin Supabase session প্রয়োজন');
+
+  const order = orders.find(item => item.id === button.dataset.orderId);
+  const orderId = String(order?.cloudId || '');
+  if (!order || !/^[0-9a-f-]{36}$/i.test(orderId)) {
+    return showToast('Order cloud-এ sync হয়নি; Supabase-এ order save হওয়ার পর আবার চেষ্টা করুন');
+  }
+
+  button.disabled = true;
+  button.textContent = button.dataset.steadfastAction === 'create' ? 'Booking...' : 'Checking...';
+  let courierFailure = null;
+
+  try {
+    const {data, error} = await client.functions.invoke('steadfast-booking', {
+      body:{action:button.dataset.steadfastAction, order_id:orderId}
+    });
+    if (error) {
+      let message = error.message || 'Steadfast request failed';
+      if (error.context instanceof Response) {
+        const details = await error.context.clone().json().catch(() => ({}));
+        courierFailure = details;
+        message = [details.error, details.diagnostic].filter(Boolean).join(' — ') || message;
+      }
+      throw new Error(message);
+    }
+    if (data?.error) throw new Error(data.error);
+
+    const loaded = await loadCloudOrders();
+    if (!loaded) throw new Error('Courier update হয়েছে, কিন্তু cloud order refresh করা যায়নি');
+    const updatedOrder = orders.find(item => item.id === order.id);
+    if (updatedOrder) showAdminOrder(updatedOrder.id);
+    showToast(button.dataset.steadfastAction === 'create'
+      ? (data?.already_booked ? 'এই order আগে থেকেই Steadfast-এ booked' : 'Steadfast courier booking তৈরি হয়েছে')
+      : 'Courier status refresh হয়েছে');
+  } catch (error) {
+    console.error('Steadfast admin action failed:', error);
+    if (courierFailure?.courier_status) {
+      order.courierStatus = courierFailure.courier_status;
+      order.courierError = courierFailure.error || '';
+      showAdminOrder(order.id);
+    }
+    button.disabled = false;
+    button.textContent = button.dataset.steadfastAction === 'create' ? 'Send to Steadfast' : 'Check courier status';
+    showToast(error.message || 'Steadfast request failed');
+  }
+}
+
+async function saveManualTrackingForm(form) {
+  const data = Object.fromEntries(new FormData(form));
+  const order = orders.find(item => item.id === String(data.orderId));
+  if (!order) return showToast('Order পাওয়া যায়নি');
+
+  const client = window.laibaSupabase;
+  const isSteadfast = String(data.courierName || '').trim().toLowerCase() === 'steadfast';
+  const consignmentId = String(data.bookingNumber || '').trim();
+  const trackingCode = String(data.trackingCode || '').trim();
+  if (client && /^[0-9a-f-]{36}$/i.test(String(order.cloudId || ''))) {
+    const result = await client.from('orders').update({
+      courier_name:data.courierName,
+      booking_number:consignmentId,
+      tracking_url:data.trackingUrl || null,
+      ...(isSteadfast ? {
+        consignment_id:consignmentId || null,
+        tracking_code:trackingCode || null,
+        courier_status:order.courierStatus === 'unknown' ? 'in_review' : (order.courierStatus || 'in_review'),
+        courier_error:null
+      } : {})
+    }).eq('id', order.cloudId);
+    if (result.error) {
+      console.error('Manual courier details save failed:', result.error);
+      return showToast(result.error.message || 'Courier details save হয়নি');
+    }
+  }
+
+  order.courierName = data.courierName;
+  order.bookingNumber = consignmentId;
+  order.trackingUrl = data.trackingUrl || '';
+  if (isSteadfast) {
+    order.consignmentId = consignmentId;
+    order.trackingCode = trackingCode;
+    order.courierStatus = order.courierStatus === 'unknown' ? 'in_review' : (order.courierStatus || 'in_review');
+    order.courierError = '';
+  }
+  await saveState();
+  closeModal('ordersModal');
+  renderAdmin();
+  showToast('Tracking details updated');
+}
+
+document.addEventListener('click', event => {
+  const searchButton = event.target.closest('[data-action="admin-search-order"]');
+  if (searchButton) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const order = findOrderByLookup(document.querySelector('#adminOrderSearch')?.value);
+    if (!order) return showToast('Order পাওয়া যায়নি');
+    return showAdminOrder(order.id);
+  }
+
+  const printButton = event.target.closest('[data-print-order]');
+  if (printButton) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const order = orders.find(item => item.id === printButton.dataset.printOrder);
+    if (!order || currentUser?.role !== 'admin') return;
+    return printOrderDocument(order, printButton.dataset.printKind);
+  }
+
+  const courierButton = event.target.closest('[data-steadfast-action]');
+  if (!courierButton) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void handleSteadfastAction(courierButton);
+}, true);
+
+document.addEventListener('submit', event => {
+  const form = event.target.closest('#trackingForm');
+  if (!form) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void saveManualTrackingForm(form);
+}, true);
+
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.target.id !== 'adminOrderSearch') return;
+  event.preventDefault();
+  document.querySelector('[data-action="admin-search-order"]')?.click();
+});
+
+const renderAdminBeforeCourierScan = renderAdmin;
+renderAdmin = function(...args) {
+  renderAdminBeforeCourierScan.apply(this, args);
+  const input = document.querySelector('#adminOrderSearch');
+  if (input) {
+    input.placeholder = 'Scan barcode / Order ID / invoice / tracking code';
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', 'Scan barcode or search order ID, invoice, tracking code, mobile or email');
+  }
+};
 function checkoutTotals() {
   const subtotal = cart.reduce((total, item) => total + item.price * item.quantity, 0);
   const discount = appliedCoupon?.type === 'percent' ? Math.min(Math.round(subtotal * appliedCoupon.value / 100), Number(appliedCoupon.maxDiscount || Infinity)) : appliedCoupon?.type === 'fixed' ? Math.min(Number(appliedCoupon.value || 0), subtotal) : 0;
@@ -1606,6 +1831,7 @@ function placeOrder(data) {
       phone:data.phone,
       address:data.address
     },
+    district:data.district || checkoutDraft.district || '',
     payment:data.payment,
     items:cart.map(item => ({
       id:item.id,
@@ -1848,7 +2074,7 @@ if (action === 'mall-products') { event.preventDefault(); return showMallProduct
   const deleteAd = event.target.closest('[data-delete-ad]'); if (deleteAd) { ads = ads.filter(ad => ad.id !== Number(deleteAd.dataset.deleteAd)); saveState(); renderAdmin(); return; }
   const editAd = event.target.closest('[data-edit-ad]'); if (editAd) { event.preventDefault(); event.stopPropagation(); const ad = ads.find(item => item.id === Number(editAd.dataset.editAd)); if (ad) { const selectedIds = new Set((ad.productIds || []).map(Number)); const selectedProducts = products.map(product => `<label><input type="checkbox" name="campaignProducts" value="${product.id}" ${selectedIds.has(Number(product.id)) ? 'checked' : ''}><span>${escapeHtml(product.name)}</span><small>${money(product.price)}</small></label>`).join(''); const categoryOptions = getActiveCategories().map(category => `<option value="${escapeHtml(category.name)}" ${ad.targetCategory === category.name ? 'selected' : ''}>${escapeHtml(category.name)}</option>`).join(''); $('#ordersContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">CAMPAIGN EDITOR</p><h2>${escapeHtml(ad.title)}</h2></div><form id="adEditForm" class="stack-form"><input type="hidden" name="id" value="${ad.id}"><input name="title" value="${escapeHtml(ad.title)}" required><input name="text" value="${escapeHtml(ad.text)}" required><input name="image" value="${escapeHtml(ad.image)}" type="url" required><input name="link" value="${escapeHtml(ad.link || '#campaign')}"><input name="expiresAt" value="${escapeHtml(ad.expiresAt || '')}" type="datetime-local"><select name="targetCategory"><option value="">সব category</option>${categoryOptions}</select><fieldset class="campaign-picker"><legend>এই campaign-এ products বাছাই করুন</legend>${selectedProducts}</fieldset><button class="primary-button" type="submit">Update campaign</button></form>`; openModal('ordersModal'); } return; }
   const viewOrder = event.target.closest('[data-view-order]'); if (viewOrder) return showAdminOrder(viewOrder.dataset.viewOrder);
-  const editTracking = event.target.closest('[data-edit-tracking]'); if (editTracking) { const order = orders.find(item => item.id === editTracking.dataset.editTracking); if (!order) return; $('#ordersContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">COURIER TRACKING</p><h2>Order #${escapeHtml(order.id)}</h2></div><form id="trackingForm" class="stack-form"><input type="hidden" name="orderId" value="${order.id}"><input name="courierName" value="${escapeHtml(order.courierName || '')}" placeholder="Courier service name" required><input name="bookingNumber" value="${escapeHtml(order.bookingNumber || '')}" placeholder="Booking Number" required><input name="trackingUrl" value="${escapeHtml(order.trackingUrl || '')}" placeholder="Tracking Link (optional)" type="url"><button class="primary-button" type="submit">Tracking update করুন</button></form>`; return openModal('ordersModal'); }
+  const editTracking = event.target.closest('[data-edit-tracking]'); if (editTracking) { const order = orders.find(item => item.id === editTracking.dataset.editTracking); if (!order) return; $('#ordersContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">COURIER TRACKING</p><h2>Order #${escapeHtml(order.id)}</h2><p>Steadfast portal থেকে পাওয়া tracking code এখানে দিন—unknown booking reconcile করতে সাহায্য করবে।</p></div><form id="trackingForm" class="stack-form"><input type="hidden" name="orderId" value="${escapeHtml(order.id)}"><input name="courierName" value="${escapeHtml(order.courierName || '')}" placeholder="Courier service name" required><input name="bookingNumber" value="${escapeHtml(order.consignmentId || order.bookingNumber || '')}" placeholder="Consignment / Booking Number" required><input name="trackingCode" value="${escapeHtml(order.trackingCode || '')}" placeholder="Steadfast tracking code (if available)"><input name="trackingUrl" value="${escapeHtml(order.trackingUrl || '')}" placeholder="Tracking Link (optional)" type="url"><button class="primary-button" type="submit">Tracking update করুন</button></form>`; return openModal('ordersModal'); }
   const editGift = event.target.closest('[data-edit-gift]'); if (editGift) { const gift = gifts.find(item => item.id === Number(editGift.dataset.editGift)); if (!gift) return; const selectedProducts = products.map(product => `<label><input type="checkbox" name="giftProducts" value="${product.id}" ${(gift.productIds || []).includes(product.id) ? 'checked' : ''}><span>${escapeHtml(product.name)}</span><small>${money(product.price)}</small></label>`).join(''); const categoryOptions = getActiveCategories().map(category => `<option value="${escapeHtml(category.name)}" ${gift.giftCategory === category.name ? 'selected' : ''}>${escapeHtml(category.name)}</option>`).join(''); $('#ordersContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">FREE GIFT CAMPAIGN</p><h2>Edit ${escapeHtml(gift.title)}</h2></div><form id="giftEditForm" class="stack-form"><input type="hidden" name="id" value="${gift.id}"><input name="title" value="${escapeHtml(gift.title)}" required><input name="image" value="${escapeHtml(gift.image)}" type="url" required><input name="stock" value="${gift.stock}" type="number" min="0" required><input name="quantity" value="${gift.quantity || 1}" type="number" min="1" required><input name="expiresAt" value="${escapeHtml(gift.expiresAt || '')}" type="datetime-local"><select name="giftCategory"><option value="">সব category</option>${categoryOptions}</select><select name="giftSubcategory">${getSubcategoryOptions(gift.giftCategory, gift.giftSubcategory || '')}</select><fieldset class="campaign-picker"><legend>Gift পেতে products tick করুন</legend>${selectedProducts}</fieldset><button class="primary-button" type="submit">Update gift</button></form>`; return openModal('ordersModal'); }
   const deleteGift = event.target.closest('[data-delete-gift]'); if (deleteGift) { gifts = gifts.filter(item => item.id !== Number(deleteGift.dataset.deleteGift)); saveState(); renderGifts(); renderAdmin(); showToast('Gift campaign removed'); return; }
   const giftView = event.target.closest('[data-gift-view]'); if (giftView) return showGiftDetails(giftView.dataset.giftView);

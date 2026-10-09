@@ -1684,6 +1684,44 @@
   padding:13px!important;
 }
 
+#ordersModal .courier-actions,
+#ordersModal .order-courier-info{
+  display:grid;
+  gap:10px;
+  margin-top:18px;
+  padding:14px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:#fbfcfa;
+}
+
+#ordersModal .courier-actions .row-actions{
+  flex-wrap:wrap;
+}
+
+#ordersModal .courier-actions button:disabled{
+  cursor:not-allowed;
+  opacity:.55;
+}
+
+#ordersModal .order-courier-info span,
+#ordersModal .courier-error{
+  overflow-wrap:anywhere;
+  font-size:12px;
+}
+
+#ordersModal .courier-error{
+  color:#a32d20;
+}
+
+#ordersModal .order-barcode{
+  max-width:100%;
+}
+
+#adminOrderSearch{
+  min-width:0;
+}
+
 #adminModal .selected-products-preview{
   border-radius:12px!important;
 }
@@ -7021,4 +7059,3 @@ body.ziyana-route-active #overlay{display:none!important}
     padding:11px 12px;
   }
 }
-

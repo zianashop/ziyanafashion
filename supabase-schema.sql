@@ -47,6 +47,7 @@ create table if not exists public.orders (
   id uuid primary key default gen_random_uuid(),
   user_id uuid references public.profiles(id) on delete set null,
   customer jsonb not null default '{}'::jsonb,
+  district text not null default '',
   payment text not null default 'cod',
   items jsonb not null default '[]'::jsonb,
   gift jsonb,
@@ -59,8 +60,35 @@ create table if not exists public.orders (
   courier_name text,
   booking_number text,
   tracking_url text,
+  invoice_number text not null default ('ZS-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 12))),
+  consignment_id text,
+  tracking_code text,
+  courier_status text,
+  courier_error text,
+  courier_last_attempt_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table public.orders add column if not exists invoice_number text;
+alter table public.orders add column if not exists district text not null default '';
+alter table public.orders add column if not exists consignment_id text;
+alter table public.orders add column if not exists tracking_code text;
+alter table public.orders add column if not exists courier_status text;
+alter table public.orders add column if not exists courier_error text;
+alter table public.orders add column if not exists courier_last_attempt_at timestamptz;
+
+update public.orders
+set invoice_number = 'ZS-' || upper(replace(id::text, '-', ''))
+where invoice_number is null or invoice_number = '';
+
+alter table public.orders
+  alter column invoice_number set default ('ZS-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 12))),
+  alter column invoice_number set not null;
+
+create unique index if not exists orders_invoice_number_key on public.orders (invoice_number);
+create unique index if not exists orders_steadfast_consignment_id_key
+  on public.orders (consignment_id) where consignment_id is not null;
+create index if not exists orders_courier_status_idx on public.orders (courier_status);
 
 create table if not exists public.store_settings (
   key text primary key,
@@ -71,6 +99,37 @@ create table if not exists public.store_settings (
 create or replace function public.is_admin()
 returns boolean language sql stable security definer set search_path = public
 as $$ select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'); $$;
+
+create or replace function public.claim_steadfast_booking(p_order_id uuid)
+returns setof public.orders
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    raise exception 'service role required';
+  end if;
+
+  return query
+  update public.orders as order_row
+  set courier_status = 'booking',
+      courier_error = null,
+      courier_last_attempt_at = now(),
+      invoice_number = coalesce(
+        nullif(order_row.invoice_number, ''),
+        'ZS-' || upper(replace(order_row.id::text, '-', ''))
+      )
+  where order_row.id = p_order_id
+    and order_row.status = 'confirmed'
+    and order_row.consignment_id is null
+    and coalesce(order_row.courier_status, '') in ('', 'failed')
+  returning order_row.*;
+end;
+$$;
+
+revoke all on function public.claim_steadfast_booking(uuid) from public, anon, authenticated;
+grant execute on function public.claim_steadfast_booking(uuid) to service_role;
 
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public
@@ -106,6 +165,8 @@ drop policy if exists "Users update own profile" on public.profiles;
 create policy "Users update own profile" on public.profiles for update using (id = auth.uid()) with check (id = auth.uid());
 drop policy if exists "Admins manage profiles" on public.profiles;
 create policy "Admins manage profiles" on public.profiles for all using (public.is_admin()) with check (public.is_admin());
+revoke update on public.profiles from public, anon, authenticated;
+grant update (name, email, phone, address, district) on public.profiles to authenticated;
 
 drop policy if exists "Users read own orders" on public.orders;
 create policy "Users read own orders" on public.orders for select using (user_id = auth.uid() or public.is_admin());
