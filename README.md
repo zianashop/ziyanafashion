@@ -26,7 +26,7 @@ Order booking is an explicit admin action: first change an order to **Confirmed*
 
 The browser only calls the `steadfast-booking` Supabase Edge Function. Steadfast API credentials must remain server-side:
 
-1. Apply the latest complete `supabase-schema.sql` in the Supabase SQL Editor. It adds invoice/courier fields and the service-role-only booking claim function.
+1. Apply the latest complete `supabase-schema.sql` in the Supabase SQL Editor. It adds invoice/courier fields, the applied coupon code, and the service-role-only booking claim function.
 2. In the Supabase Dashboard, open **Edge Functions → Secrets** and set `STEADFAST_API_KEY` and `STEADFAST_SECRET_KEY` from the merchant account. Never paste these credentials into this repository, `supabase-config.js`, or browser code.
    The function calls `https://portal.packzy.com/api/v1`, the merchant API base URL.
 3. Install the Supabase CLI in the repository if it is not installed already, then deploy from the repository root. When installed with npm, use `npx`:
@@ -40,7 +40,7 @@ The browser only calls the `steadfast-booking` Supabase Edge Function. Steadfast
 
    The Edge Function uses native `fetch` for Supabase Auth/REST requests and has no third-party module import to download during bundling.
 
-4. In the admin panel, use **Print invoice** for the internal invoice number/barcode. After a successful courier booking, **Print parcel label** prints the tracking-code barcode and recipient details. This is a merchant-generated parcel label, not a claim that it is an official Steadfast label.
-5. The admin order search accepts order ID, invoice number, consignment ID, tracking code, mobile, or email. USB/Bluetooth barcode scanners that type into the focused search field and send Enter can be used for lookup.
+4. In the admin panel, **Print invoice** and **Print parcel label** both use 50 × 30 mm paper and print the name, mobile, delivery address, ordered products, quantities, and small product images from the checkout order. Order number, invoice number, Steadfast consignment ID, and tracking code (when available) are each printed on their own line for manual lookup if a code cannot be scanned. Product rows compress to fit the available area. Any free gift and applied coupon appear directly below the products without an oversized blank gap. The receipt also shows item amounts, totals, invoice barcode, and a QR code containing the invoice number; the parcel label shows the courier tracking barcode and a QR code containing the tracking code. Choose 50 × 30 mm paper in the print dialog if the printer does not select it automatically. The parcel label is merchant-generated, not an official Steadfast label.
+5. The admin order search accepts order ID, invoice number, consignment ID, tracking code, mobile, or email. The invoice barcode represents the invoice number, which is also printed beside the order number; scan either barcode into the admin search field and press Enter. USB/Bluetooth scanners that type the barcode text into the focused field are supported.
 
 The Edge Function verifies the caller's Supabase session and admin profile before accessing the service role or merchant API. Courier booking and delivery status remain separate from the shop's order fulfillment status.

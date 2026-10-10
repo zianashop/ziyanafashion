@@ -539,6 +539,7 @@ async function persistCloudOrder(order) {
     payment:order.payment,
     items:order.items,
     gift:order.gift,
+    coupon_code:order.couponCode || null,
     subtotal:order.subtotal,
     discount:order.discount,
     shipping:order.shipping,
@@ -582,6 +583,7 @@ async function loadCloudOrders() {
     payment: order.payment || 'cod',
     items: Array.isArray(order.items) ? order.items : [],
     gift: order.gift || null,
+    couponCode: order.coupon_code || '',
     subtotal: Number(order.subtotal || 0),
     discount: Number(order.discount || 0),
     shipping: Number(order.shipping || 0),
@@ -1378,26 +1380,276 @@ function code39Barcode(value) {
   return `<svg class="order-barcode" role="img" aria-label="Barcode ${escapeHtml(text)}" viewBox="0 0 ${cursor + 8} 70" xmlns="http://www.w3.org/2000/svg">${bars.join('')}<text x="50%" y="67" text-anchor="middle" font-size="8">${escapeHtml(text)}</text></svg>`;
 }
 
+function qrCodeSvg(value) {
+  const bytes = [...new TextEncoder().encode(String(value || ''))];
+  if (!bytes.length) return '';
+
+  const versions = [
+    {data:19, ecc:7},
+    {data:34, ecc:10},
+    {data:55, ecc:15},
+    {data:80, ecc:20}
+  ];
+  const version = versions.findIndex(({data}) => bytes.length <= data - 2);
+  if (version < 0) return '';
+  const {data:dataCodewords, ecc:eccCodewords} = versions[version];
+  const qrVersion = version + 1;
+
+  const bits = [];
+  const appendBits = (number, length) => {
+    for (let i = length - 1; i >= 0; i--) bits.push((number >>> i) & 1);
+  };
+  appendBits(0b0100, 4);
+  appendBits(bytes.length, 8);
+  bytes.forEach(byte => appendBits(byte, 8));
+  for (let i = 0; i < Math.min(4, dataCodewords * 8 - bits.length); i++) bits.push(0);
+  while (bits.length % 8) bits.push(0);
+
+  const data = [];
+  for (let i = 0; i < bits.length; i += 8) {
+    data.push(bits.slice(i, i + 8).reduce((byte, bit) => (byte << 1) | bit, 0));
+  }
+  for (let pad = 0; data.length < dataCodewords; pad++) data.push(pad % 2 ? 0x11 : 0xec);
+
+  const multiply = (left, right) => {
+    let product = 0;
+    for (let i = 7; i >= 0; i--) {
+      product = (product << 1) ^ ((product >>> 7) * 0x11d);
+      product ^= ((right >>> i) & 1) * left;
+    }
+    return product;
+  };
+  let generator = [1];
+  let root = 1;
+  for (let i = 0; i < eccCodewords; i++) {
+    const next = Array(generator.length + 1).fill(0);
+    generator.forEach((coefficient, index) => {
+      next[index] ^= multiply(coefficient, root);
+      next[index + 1] ^= coefficient;
+    });
+    generator = next;
+    root = multiply(root, 2);
+  }
+  const remainder = Array(eccCodewords).fill(0);
+  data.forEach(byte => {
+    const factor = byte ^ remainder.shift();
+    remainder.push(0);
+    remainder.forEach((_, index) => { remainder[index] ^= multiply(generator[index + 1], factor); });
+  });
+  const codewords = [...data, ...remainder];
+  const size = qrVersion * 4 + 17;
+  const base = Array.from({length:size}, () => Array(size).fill(null));
+  const setFunction = (x, y, dark) => { base[y][x] = dark; };
+
+  for (const [centerX, centerY] of [[3, 3], [size - 4, 3], [3, size - 4]]) {
+    for (let dy = -4; dy <= 4; dy++) {
+      for (let dx = -4; dx <= 4; dx++) {
+        const x = centerX + dx;
+        const y = centerY + dy;
+        if (x >= 0 && x < size && y >= 0 && y < size) {
+          const distance = Math.max(Math.abs(dx), Math.abs(dy));
+          setFunction(x, y, distance !== 2 && distance !== 4);
+        }
+      }
+    }
+  }
+  for (let i = 8; i < size - 8; i++) {
+    if (base[6][i] === null) setFunction(i, 6, i % 2 === 0);
+    if (base[i][6] === null) setFunction(6, i, i % 2 === 0);
+  }
+  if (qrVersion > 1) {
+    const center = qrVersion * 4 + 10;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        setFunction(center + dx, center + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+      }
+    }
+  }
+
+  const setFormat = (matrix, mask) => {
+    const formatData = (1 << 3) | mask;
+    let remainderBits = formatData;
+    for (let i = 0; i < 10; i++) remainderBits = (remainderBits << 1) ^ (((remainderBits >>> 9) & 1) * 0x537);
+    const format = ((formatData << 10) | remainderBits) ^ 0x5412;
+    const set = (x, y, bit) => { matrix[y][x] = ((format >>> bit) & 1) !== 0; };
+    for (let i = 0; i <= 5; i++) set(8, i, i);
+    set(8, 7, 6);
+    set(8, 8, 7);
+    set(7, 8, 8);
+    for (let i = 9; i < 15; i++) set(14 - i, 8, i);
+    for (let i = 0; i < 8; i++) set(size - 1 - i, 8, i);
+    for (let i = 8; i < 15; i++) set(8, size - 15 + i, i);
+    matrix[size - 8][8] = true;
+  };
+
+  let bestMatrix = null;
+  let bestPenalty = Infinity;
+  for (let mask = 0; mask < 8; mask++) {
+    const matrix = base.map(row => row.slice());
+    let bitIndex = 0;
+    for (let right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right--;
+      for (let vertical = 0; vertical < size; vertical++) {
+        const y = ((right + 1) & 2) === 0 ? size - 1 - vertical : vertical;
+        for (let offset = 0; offset < 2; offset++) {
+          const x = right - offset;
+          if (matrix[y][x] !== null) continue;
+          const bit = bitIndex < codewords.length * 8
+            ? (codewords[bitIndex >>> 3] >>> (7 - (bitIndex & 7))) & 1
+            : 0;
+          bitIndex++;
+          const invert = mask === 0 ? (x + y) % 2 === 0
+            : mask === 1 ? y % 2 === 0
+              : mask === 2 ? x % 3 === 0
+                : mask === 3 ? (x + y) % 3 === 0
+                  : mask === 4 ? (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0
+                    : mask === 5 ? (x * y) % 2 + (x * y) % 3 === 0
+                      : mask === 6 ? ((x * y) % 2 + (x * y) % 3) % 2 === 0
+                        : ((x + y) % 2 + (x * y) % 3) % 2 === 0;
+          matrix[y][x] = Boolean(bit) !== invert;
+        }
+      }
+    }
+    setFormat(matrix, mask);
+    let penalty = 0;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const color = matrix[y][x];
+        if (x + 1 < size && y + 1 < size
+          && color === matrix[y][x + 1] && color === matrix[y + 1][x] && color === matrix[y + 1][x + 1]) penalty += 3;
+        if (x + 6 < size && [0, 1, 2, 3, 4, 5, 6].every(offset => matrix[y][x + offset] === (offset % 2 === 0))) {
+          const before = x >= 4 && [1, 2, 3, 4].every(offset => !matrix[y][x - offset]);
+          const after = x + 10 < size && [7, 8, 9, 10].every(offset => !matrix[y][x + offset]);
+          if (before || after) penalty += 40;
+        }
+      }
+    }
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        if (x + 6 < size && [0, 1, 2, 3, 4, 5, 6].every(offset => matrix[x + offset][y] === (offset % 2 === 0))) {
+          const before = x >= 4 && [1, 2, 3, 4].every(offset => !matrix[x - offset][y]);
+          const after = x + 10 < size && [7, 8, 9, 10].every(offset => !matrix[x + offset][y]);
+          if (before || after) penalty += 40;
+        }
+      }
+    }
+    for (const line of [...matrix, ...matrix.map((_, x) => matrix.map(row => row[x]))]) {
+      let run = 1;
+      for (let i = 1; i <= size; i++) {
+        if (i < size && line[i] === line[i - 1]) run++;
+        else {
+          if (run >= 5) penalty += run - 2;
+          run = 1;
+        }
+      }
+    }
+    let darkModules = 0;
+    matrix.forEach(row => row.forEach(dark => { if (dark) darkModules++; }));
+    penalty += Math.floor(Math.abs(darkModules * 20 - size * size * 10) / (size * size)) * 10;
+    if (penalty < bestPenalty) {
+      bestPenalty = penalty;
+      bestMatrix = matrix;
+    }
+  }
+
+  if (!bestMatrix) return '';
+  const quietZone = 4;
+  const modules = [];
+  bestMatrix.forEach((row, y) => row.forEach((dark, x) => {
+    if (dark) modules.push(`<rect x="${x + quietZone}" y="${y + quietZone}" width="1" height="1"/>`);
+  }));
+  const viewSize = size + quietZone * 2;
+  return `<svg class="order-qr" role="img" aria-label="QR code ${escapeHtml(value)}" viewBox="0 0 ${viewSize} ${viewSize}" xmlns="http://www.w3.org/2000/svg"><path fill="#fff" d="M0 0h${viewSize}v${viewSize}H0z"/><g fill="#000">${modules.join('')}</g></svg>`;
+}
+
 function printOrderDocument(order, kind) {
   const invoiceNumber = order.invoiceNumber || `ZS-${String(order.cloudId || order.id).replace(/[^a-z0-9]/gi, '').slice(-12).toUpperCase()}`;
   const isLabel = kind === 'label';
   const barcodeValue = isLabel ? order.trackingCode : invoiceNumber;
   const barcode = barcodeValue ? code39Barcode(barcodeValue) : '';
+  const qrCode = barcodeValue ? qrCodeSvg(barcodeValue) : '';
+  const invoiceBanner = new URL('ziyana-invoice-banner.png', window.location.href).href;
+  const storedName = String(order.customer?.name || '').trim();
+  const customerName = storedName && !storedName.includes('@') ? storedName : 'নাম নেই';
+  const itemRows = (order.items || []).map(item => {
+    const product = products.find(entry => String(entry.id) === String(item.id));
+    const image = item.image || (product ? primaryProductImage(product) : '');
+    return `<div class="item-row">${image ? `<img src="${escapeHtml(image)}" alt="">` : '<span class="item-image-placeholder"></span>'}<span class="item-name">${escapeHtml(item.name)}</span><b>×${escapeHtml(item.quantity)}</b>${isLabel ? '' : `<span class="item-price">${money(item.price * item.quantity)}</span>`}</div>`;
+  }).join('');
+  const barcodeAndQr = `<div class="code-pair">${barcode || '<span class="barcode-missing">Barcode unavailable</span>'}${qrCode}</div>`;
+  const extras = [
+    order.gift?.title ? `<div class="promo-row gift-row">${order.gift.image ? `<img src="${escapeHtml(order.gift.image)}" alt="">` : '<span class="item-image-placeholder"></span>'}<span>ফ্রি গিফট: ${escapeHtml(order.gift.title)} ×${escapeHtml(order.gift.quantity || 1)}</span><b>ফ্রি</b></div>` : '',
+    order.couponCode ? `<div class="promo-row coupon-row"><span>কুপন: ${escapeHtml(order.couponCode)}</span><b>${order.discount > 0 ? `−${money(order.discount)}` : 'প্রয়োগ হয়েছে'}</b></div>` : ''
+  ].filter(Boolean).join('');
+  const referenceRows = [
+    ['Order', order.id],
+    ['Invoice', invoiceNumber],
+    ['Steadfast consignment', order.consignmentId || order.bookingNumber],
+    ['Steadfast tracking', order.trackingCode]
+  ].filter(([, value]) => value)
+    .map(([label, value]) => `<p class="reference-row"><b>${label}:</b> ${escapeHtml(value)}</p>`)
+    .join('');
+  const extraCount = Number(Boolean(order.gift?.title)) + Number(Boolean(order.couponCode));
+  const referenceCount = (order.id ? 1 : 0) + (invoiceNumber ? 1 : 0)
+    + Number(Boolean(order.consignmentId || order.bookingNumber))
+    + Number(Boolean(order.trackingCode));
+  const reservedHeight = 1 + 2.8 + 4.5 + referenceCount * 1.15 + (isLabel ? 6 : 8.3) + .3;
+  const productAreaHeight = Math.max(1, 30 - reservedHeight);
+  const itemRowHeight = Math.min(2.7, productAreaHeight / Math.max((order.items || []).length + extraCount, 1));
+  const itemFontSize = Math.max(3, Math.min(5, itemRowHeight * 1.65));
+  const address = String(order.customer?.address || '').trim();
+  const phone = String(order.customer?.phone || '').trim();
+  const orderDetails = `<div class="customer-details"><b class="customer-name">${escapeHtml(customerName)}</b><span>${escapeHtml(phone || 'মোবাইল নেই')}</span><span class="customer-address">${escapeHtml(address || 'ঠিকানা নেই')}</span></div>`;
   const popup = window.open('', '_blank');
   if (!popup) return showToast('Print window blocked; allow pop-ups for this site');
   popup.opener = null;
 
-  const itemRows = (order.items || []).map(item => `<tr><td>${escapeHtml(item.name)} × ${item.quantity}</td><td>${money(item.price * item.quantity)}</td></tr>`).join('');
   const page = isLabel
-    ? `<main class="label"><p>ZIYANA SHOP · MERCHANT PARCEL LABEL</p><h1>${escapeHtml(order.customer?.name || '')}</h1><h2>${escapeHtml(order.customer?.phone || '')}</h2><p>${escapeHtml(order.customer?.address || '')}</p><hr><p>Invoice: ${escapeHtml(invoiceNumber)}</p><p>Consignment: ${escapeHtml(order.consignmentId || order.bookingNumber || 'Not booked')}</p><h2>Tracking code: ${escapeHtml(order.trackingCode || 'Not available')}</h2>${barcode || '<p>Barcode unavailable: tracking code is missing or contains unsupported characters.</p>'}<p>${(order.items || []).map(item => `${escapeHtml(item.name)} × ${item.quantity}`).join('<br>')}</p></main>`
-    : `<main class="invoice"><header><h1>Ziyana Shop</h1><p>Customer invoice</p></header><section><b>Invoice:</b> ${escapeHtml(invoiceNumber)}<br><b>Order:</b> ${escapeHtml(order.id)}<br><b>Date:</b> ${escapeHtml(order.createdAt || '')}</section><section><b>Customer:</b> ${escapeHtml(order.customer?.name || '')}<br><b>Phone:</b> ${escapeHtml(order.customer?.phone || '')}<br><b>Address:</b> ${escapeHtml(order.customer?.address || '')}</section><table><thead><tr><th>Product</th><th>Amount</th></tr></thead><tbody>${itemRows}</tbody></table><p>Subtotal: ${money(order.subtotal)}<br>Discount: -${money(order.discount)}<br>Shipping: ${money(order.shipping || 0)}<br><b>Total: ${money(order.total)}</b></p>${barcode || '<p>Invoice barcode unavailable.</p>'}</main>`;
+    ? `<main class="print-card parcel-label" style="--item-row-height:${itemRowHeight}mm;--item-font-size:${itemFontSize}px"><header class="print-header"><img src="${escapeHtml(invoiceBanner)}" alt="Ziyana Fashion"><b>PARCEL</b></header>${orderDetails}<div class="reference-list">${referenceRows}</div><div class="item-list">${itemRows}${extras}</div>${barcodeAndQr}</main>`
+    : `<main class="print-card invoice" style="--item-row-height:${itemRowHeight}mm;--item-font-size:${itemFontSize}px"><header class="print-header"><img src="${escapeHtml(invoiceBanner)}" alt="Ziyana Fashion"><b>রসিদ</b></header>${orderDetails}<div class="reference-list">${referenceRows}</div><div class="item-list">${itemRows}${extras}</div><p class="invoice-summary">পণ্য ${money(order.subtotal)} · ছাড় -${money(order.discount)} · ডেলিভারি ${money(order.shipping || 0)}</p><p class="invoice-total">মোট <strong>${money(order.total)}</strong></p>${barcodeAndQr}</main>`;
 
-  popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${isLabel ? 'Parcel label' : 'Invoice'} ${escapeHtml(invoiceNumber)}</title><style>*{box-sizing:border-box}body{font:14px Arial,sans-serif;color:#111;margin:0;padding:24px}.invoice{max-width:720px;margin:auto}.label{width:100mm;min-height:150mm;margin:auto}header{text-align:center;border-bottom:2px solid #111}section{margin:18px 0;line-height:1.7}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px;border-bottom:1px solid #aaa}.order-barcode{display:block;width:100%;max-width:520px;height:auto;margin:18px auto}.label .order-barcode{max-width:90mm}@media print{body{padding:0}.invoice{max-width:none}.label{margin:0}}</style></head><body>${page}<script>window.addEventListener('load',()=>window.print())<\/script></body></html>`);
+  const bodyClass = isLabel ? 'label-print' : 'invoice-print';
+  popup.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${isLabel ? 'Parcel label' : 'Invoice'} ${escapeHtml(invoiceNumber)}</title><style>
+    @page{size:50mm 30mm;margin:0}
+    *{box-sizing:border-box}
+    body{font:6px Arial,sans-serif;color:#17233f;margin:0;padding:0}
+    .print-card{width:50mm;height:30mm;overflow:hidden;padding:.5mm .8mm;background:#fff;display:flex;flex-direction:column}
+    .print-header{height:2.8mm;min-height:2.8mm;display:flex;align-items:center;justify-content:space-between;border-bottom:.2mm solid #d4a11e;padding-bottom:.15mm}
+    .print-header img{width:12mm;height:2.5mm;object-fit:contain;object-position:left center}
+    .print-header b{font-size:5.5px;letter-spacing:.2px;color:#1b426d}
+    .customer-details{min-height:4.5mm;max-height:4.5mm;display:grid;grid-template-columns:1fr auto;grid-template-rows:1.8mm 2.5mm;column-gap:1mm;line-height:1.05;padding-top:.15mm}
+    .customer-name{font-size:5.2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .customer-address{grid-column:1/-1;overflow:hidden;font-size:3.8px;line-height:1.05;white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+    .reference-list{flex:none;overflow:hidden}
+    .reference-row{height:1.15mm;margin:0;font-size:4px;line-height:1.1;white-space:nowrap;overflow:hidden}
+    .reference-row b{font-weight:700}
+    .invoice-summary,.invoice-total{margin:0;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .item-list{min-height:0;flex:0 1 auto;overflow:hidden}
+    .item-row{height:var(--item-row-height);min-height:0;display:grid;grid-template-columns:2.7mm minmax(0,1fr) auto auto;gap:.45mm;align-items:center;font-size:var(--item-font-size);line-height:1}
+    .item-row img,.item-image-placeholder{width:min(2.7mm,var(--item-row-height));height:min(2.7mm,var(--item-row-height));object-fit:cover;border:.1mm solid #d9e0eb;filter:grayscale(1)}
+    .item-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .item-price{font-size:4.5px}
+    .promo-row{height:var(--item-row-height);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.5mm;align-items:center;font-size:var(--item-font-size);line-height:1;overflow:hidden}
+    .gift-row{grid-template-columns:2.7mm minmax(0,1fr) auto}
+    .gift-row img{width:2.5mm;height:2.5mm;object-fit:cover}
+    .promo-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .invoice-summary{font-size:4.4px}
+    .invoice-total{display:flex;justify-content:space-between;align-items:center;font-weight:700;border-top:.15mm solid #e4e8ef;padding-top:.15mm}
+    .invoice-total strong{font-size:6px;color:#1b426d}
+    .code-pair{height:5mm;min-height:5mm;display:flex;align-items:center;justify-content:center;gap:1mm;overflow:hidden}
+    .order-barcode{display:block;width:39mm;height:5.5mm;min-height:5.5mm;margin:0}
+    .order-qr{display:block;width:5mm;height:5mm;min-width:5mm}
+    .invoice .order-barcode{height:4.5mm;min-height:4.5mm}
+    .parcel-label .code-pair{height:6mm;min-height:6mm}
+    .parcel-label .order-barcode{width:39mm;height:5.5mm;min-height:5.5mm}
+    .barcode-missing{font-size:4.5px;color:#8b1e2d}
+    @media screen{body{padding:8px;background:#f2f4f8}.print-card{margin:auto}}
+  </style></head><body class="${bodyClass}">${page}<script>window.addEventListener('load',()=>window.print())<\/script></body></html>`);
   popup.document.close();
 }
 
 function findOrderByLookup(value) {
-  const query = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+  const query = String(value || '').trim().toLowerCase().replace(/\s+/g, '').replace(/^\*|\*$/g, '');
   if (!query) return null;
   return orders.find(order => [
     order.id,
@@ -1408,7 +1660,7 @@ function findOrderByLookup(value) {
     order.bookingNumber,
     order.customer?.phone,
     order.customer?.email
-  ].some(value => String(value || '').trim().toLowerCase().replace(/\s+/g, '') === query)) || null;
+  ].some(value => String(value || '').trim().toLowerCase().replace(/\s+/g, '').replace(/^\*|\*$/g, '') === query)) || null;
 }
 
 async function handleSteadfastAction(button) {
@@ -1564,7 +1816,8 @@ function checkoutTotals() {
 }
 function renderCheckout(draft = checkoutDraft) {
   const totals = checkoutTotals();
-  const draftName = draft.name || currentUser?.name || '';
+  const accountName = String(currentUser?.name || '');
+  const draftName = draft.name || (accountName.includes('@') ? '' : accountName);
   const draftPhone = draft.phone || currentUser?.phone || '';
   const draftAddress = draft.address || currentUser?.address || '';
   const draftDistrict = draft.district || currentUser?.district || 'ঢাকা';
@@ -1837,13 +2090,16 @@ function placeOrder(data) {
       id:item.id,
       name:item.name,
       price:item.price,
-      quantity:item.quantity
+      quantity:item.quantity,
+      image:primaryProductImage(item)
     })),
     gift:gift ? {
       id:gift.id,
       title:gift.title,
-      quantity:gift.quantity || 1
+      quantity:gift.quantity || 1,
+      image:gift.image || ''
     } : null,
+    couponCode:appliedCoupon?.code || '',
     subtotal:totals.subtotal,
     discount:totals.discount,
     shipping:totals.shipping,

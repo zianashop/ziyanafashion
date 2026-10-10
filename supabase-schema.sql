@@ -51,6 +51,7 @@ create table if not exists public.orders (
   payment text not null default 'cod',
   items jsonb not null default '[]'::jsonb,
   gift jsonb,
+  coupon_code text,
   subtotal numeric not null default 0,
   discount numeric not null default 0,
   shipping numeric not null default 0,
@@ -71,6 +72,7 @@ create table if not exists public.orders (
 
 alter table public.orders add column if not exists invoice_number text;
 alter table public.orders add column if not exists district text not null default '';
+alter table public.orders add column if not exists coupon_code text;
 alter table public.orders add column if not exists consignment_id text;
 alter table public.orders add column if not exists tracking_code text;
 alter table public.orders add column if not exists courier_status text;
