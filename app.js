@@ -30,6 +30,7 @@ const write = (key, value) => localStorage.setItem(key, JSON.stringify(value));
 const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character]));
 const money = value => `৳${Number(value || 0).toLocaleString('en-IN')}`;
 const PRODUCT_MEDIA_BUCKET = 'product-media';
+const PROFILE_PHOTO_BUCKET = 'profile-photos';
 const mediaList = value => Array.isArray(value) ? value.filter(url => typeof url === 'string' && url.trim()) : [];
 function normaliseProductMedia(product) { const images = mediaList(product.images); const legacyImage = String(product.image || '').trim(); const allImages = images.length ? images : legacyImage ? [legacyImage] : []; return {...product, image:allImages[0] || '', images:allImages, videos:mediaList(product.videos)}; }
 const productImages = product => normaliseProductMedia(product).images;
@@ -294,6 +295,39 @@ sizeGuide:product.size_guide || null,
 }
 
 async function uploadProductMedia(file, type = 'image') { const client = window.laibaSupabase; if (!client) throw new Error('Supabase connection পাওয়া যায়নি'); if (!file) return ''; const maxSize = type === 'video' ? 100 * 1024 * 1024 : 10 * 1024 * 1024; if (file.size > maxSize) throw new Error(type === 'video' ? 'Video সর্বোচ্চ 100MB হতে পারবে' : 'Image সর্বোচ্চ 10MB হতে পারবে'); if (type === 'video' && !file.type.startsWith('video/')) throw new Error('শুধু video file নির্বাচন করুন'); if (type === 'image' && !file.type.startsWith('image/')) throw new Error('শুধু image file নির্বাচন করুন'); const extension = file.name.split('.').pop()?.toLowerCase() || 'file'; const filePath = `${type === 'video' ? 'videos' : 'images'}/${Date.now()}-${crypto.randomUUID()}.${extension}`; const {error} = await client.storage.from(PRODUCT_MEDIA_BUCKET).upload(filePath, file, {cacheControl:'31536000', contentType:file.type, upsert:false}); if (error) throw new Error(error.message || 'File upload failed'); const {data} = client.storage.from(PRODUCT_MEDIA_BUCKET).getPublicUrl(filePath); if (!data?.publicUrl) throw new Error('Uploaded file-এর URL পাওয়া যায়নি'); return data.publicUrl; }
+async function uploadProfilePhoto(file, userId) {
+  const client = window.laibaSupabase;
+  const extensions = {'image/jpeg':'jpg', 'image/png':'png', 'image/webp':'webp'};
+  if (!extensions[file.type]) throw new Error('শুধু JPG, PNG বা WebP image upload করুন');
+  if (file.size > 5 * 1024 * 1024) throw new Error('Profile photo সর্বোচ্চ 5MB হতে পারবে');
+
+  const filePath = `${userId}/avatar.${extensions[file.type]}`;
+  const {error} = await client.storage
+    .from(PROFILE_PHOTO_BUCKET)
+    .upload(filePath, file, {cacheControl:'0', contentType:file.type, upsert:true});
+  if (error) throw new Error(error.message || 'Profile photo upload হয়নি');
+
+  const {data} = client.storage.from(PROFILE_PHOTO_BUCKET).getPublicUrl(filePath);
+  if (!data?.publicUrl) throw new Error('Profile photo-এর URL পাওয়া যায়নি');
+  const publicUrl = new URL(data.publicUrl);
+  publicUrl.searchParams.set('v', String(Date.now()));
+  return publicUrl.toString();
+}
+function bindProfilePhotoPreview(form) {
+  if (!form || form.dataset.photoPreviewBound) return;
+  form.dataset.photoPreviewBound = '1';
+  form.querySelector('[name="profilePhoto"]')?.addEventListener('change', event => {
+    const file = event.target.files?.[0];
+    const preview = form.querySelector('[data-profile-photo-preview]');
+    if (!file || !preview) return;
+    const previousUrl = preview.dataset.objectUrl;
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    const objectUrl = URL.createObjectURL(file);
+    preview.dataset.objectUrl = objectUrl;
+    preview.src = objectUrl;
+    preview.hidden = false;
+  });
+}
 async function uploadProductMediaFromForm(form) {
   const imageFiles = [...(form.querySelector('[name="images"]')?.files || [])];
   const videoFiles = [...(form.querySelector('[name="videos"]')?.files || [])];
@@ -311,7 +345,7 @@ function closeModal(id = activeModal) { if (id) $(`#${id}`).hidden = true; activ
 
 function showToast(text) { const toast = $('#toast'); toast.textContent = text; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2400); }
 
-async function handleCloudAuth(data) { const client = window.laibaSupabase; const identifier = data.identifier.toLowerCase().trim(); if (!identifier.includes('@')) return showToast('Supabase login-এর জন্য email ব্যবহার করুন'); const result = data.name ? await client.auth.signUp({email:identifier,password:data.password,options:{data:{name:data.name,phone:data.phone || ''}}}) : await client.auth.signInWithPassword({email:identifier,password:data.password}); if (result.error) return showToast(result.error.message); if (!result.data.user) return showToast('Authentication সম্পন্ন হয়নি'); if (data.name && !result.data.session) return showToast('Email inbox থেকে confirmation দিন'); const profileResult = await client.from('profiles').select('*').eq('id', result.data.user.id).single(); const profile = profileResult.data || {}; currentUser = {id:result.data.user.id,name:profile.name || data.name || identifier,email:identifier,phone:profile.phone || data.phone || '',address:profile.address || '',district:profile.district || '',password:'',role:profile.role || 'customer'}; write('laiba_current_user', currentUser); const shouldOpenAdmin = pendingAdmin; pendingAdmin = false; closeModal('authModal'); showToast(`স্বাগতম, ${currentUser.name}`); if (shouldOpenAdmin) return currentUser.role === 'admin' ? renderAdmin() : showToast('Admin access denied'); if (pendingCheckout) { pendingCheckout = false; return window.openCheckout(); } if (!data.name && currentUser.role === 'admin') return renderAdmin(); if (!data.name) {
+async function handleCloudAuth(data) { const client = window.laibaSupabase; const identifier = data.identifier.toLowerCase().trim(); if (!identifier.includes('@')) return showToast('Supabase login-এর জন্য email ব্যবহার করুন'); const result = data.name ? await client.auth.signUp({email:identifier,password:data.password,options:{data:{name:data.name,phone:data.phone || ''}}}) : await client.auth.signInWithPassword({email:identifier,password:data.password}); if (result.error) return showToast(result.error.message); if (!result.data.user) return showToast('Authentication সম্পন্ন হয়নি'); if (data.name && !result.data.session) return showToast(data.profilePhoto?.size ? 'Email confirm হওয়ার পর login করে Edit Profile থেকে photo upload করুন' : 'Email inbox থেকে confirmation দিন'); const profileResult = await client.from('profiles').select('*').eq('id', result.data.user.id).single(); const profile = profileResult.data || {}; let avatarUrl = profile.avatar_url || ''; if (data.name && data.profilePhoto?.size) { try { avatarUrl = await uploadProfilePhoto(data.profilePhoto, result.data.user.id); const {error} = await client.from('profiles').update({avatar_url:avatarUrl}).eq('id', result.data.user.id); if (error) throw new Error(error.message); } catch (error) { console.error('Registration profile photo upload failed:', error); showToast(error.message || 'Profile photo upload হয়নি'); } } currentUser = {id:result.data.user.id,name:profile.name || data.name || identifier,email:identifier,phone:profile.phone || data.phone || '',address:profile.address || '',district:profile.district || '',avatar_url:avatarUrl,password:'',role:profile.role || 'customer'}; write('laiba_current_user', currentUser); const shouldOpenAdmin = pendingAdmin; pendingAdmin = false; closeModal('authModal'); showToast(`স্বাগতম, ${currentUser.name}`); if (shouldOpenAdmin) return currentUser.role === 'admin' ? renderAdmin() : showToast('Admin access denied'); if (pendingCheckout) { pendingCheckout = false; return window.openCheckout(); } if (!data.name && currentUser.role === 'admin') return renderAdmin(); if (!data.name) {
     accountOrderFilter = '';
     return renderCustomerDashboard();
   } }
@@ -935,7 +969,8 @@ function addToCart(id) {
 }
 function renderAuth(mode = 'login') {
   if (currentUser) { $('#authContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">MY ACCOUNT</p><h2>${escapeHtml(currentUser.name)}</h2><p>${escapeHtml(currentUser.email || currentUser.phone)}</p></div><div class="account-actions"><button class="primary-button" data-action="my-orders">আমার অর্ডার ও রিভিউ</button><button class="outline-button" data-action="change-password">পাসওয়ার্ড পরিবর্তন</button>${currentUser.role === 'admin' ? '<button class="dark-button" data-action="open-admin">অ্যাডমিন প্যানেল</button>' : ''}<button class="outline-button" data-action="logout">লগআউট</button></div>`; return; }
-  $('#authContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">WELCOME BACK</p><h2>${mode === 'login' ? 'অ্যাকাউন্টে লগইন করুন' : 'নতুন অ্যাকাউন্ট খুলুন'}</h2><p>${mode === 'login' ? 'ইমেইল অথবা মোবাইল নম্বর দিয়ে লগইন করুন।' : 'কয়েক সেকেন্ডেই আপনার shopping account তৈরি করুন।'}</p></div><form id="authForm" class="stack-form"><input type="hidden" name="authMode" value="${mode}"><input name="name" placeholder="আপনার নাম" ${mode === 'login' ? 'hidden' : 'required'}><input name="identifier" placeholder="ইমেইল অথবা মোবাইল নম্বর" required><input name="phone" placeholder="মোবাইল নম্বর" ${mode === 'login' ? 'hidden' : 'required'}><input name="address" placeholder="ডেলিভারি ঠিকানা" ${mode === 'login' ? 'hidden' : ''}><input name="password" type="password" placeholder="পাসওয়ার্ড" required minlength="6"><button class="primary-button" type="submit">${mode === 'login' ? 'লগইন করুন' : 'রেজিস্টার করুন'} <span>→</span></button></form>${mode === 'login' ? '<button type="button" class="forgot-password-button" data-action="forgot-password">Forgot Password?</button>' : ''}<p class="form-switch">${mode === 'login' ? 'নতুন এখানে?' : 'আগেই অ্যাকাউন্ট আছে?'} <button type="button" data-auth-mode="${mode === 'login' ? 'register' : 'login'}">${mode === 'login' ? 'রেজিস্টার করুন' : 'লগইন করুন'}</button></p>`;
+  $('#authContent').innerHTML = `<div class="panel-heading"><p class="eyebrow">WELCOME BACK</p><h2>${mode === 'login' ? 'অ্যাকাউন্টে লগইন করুন' : 'নতুন অ্যাকাউন্ট খুলুন'}</h2><p>${mode === 'login' ? 'ইমেইল অথবা মোবাইল নম্বর দিয়ে লগইন করুন।' : 'কয়েক সেকেন্ডেই আপনার shopping account তৈরি করুন।'}</p></div><form id="authForm" class="stack-form"><input type="hidden" name="authMode" value="${mode}"><input name="name" placeholder="আপনার নাম" ${mode === 'login' ? 'hidden' : 'required'}>${mode === 'register' ? '<label class="profile-photo-picker">প্রোফাইল ছবি <input name="profilePhoto" type="file" accept="image/jpeg,image/png,image/webp"><small>JPG, PNG বা WebP · সর্বোচ্চ 5MB</small><img data-profile-photo-preview alt="Profile photo preview" hidden></label>' : ''}<input name="identifier" placeholder="ইমেইল অথবা মোবাইল নম্বর" required><input name="phone" placeholder="মোবাইল নম্বর" ${mode === 'login' ? 'hidden' : 'required'}><input name="address" placeholder="ডেলিভারি ঠিকানা" ${mode === 'login' ? 'hidden' : ''}><input name="password" type="password" placeholder="পাসওয়ার্ড" required minlength="6"><button class="primary-button" type="submit">${mode === 'login' ? 'লগইন করুন' : 'রেজিস্টার করুন'} <span>→</span></button></form>${mode === 'login' ? '<button type="button" class="forgot-password-button" data-action="forgot-password">Forgot Password?</button>' : ''}<p class="form-switch">${mode === 'login' ? 'নতুন এখানে?' : 'আগেই অ্যাকাউন্ট আছে?'} <button type="button" data-auth-mode="${mode === 'login' ? 'register' : 'login'}">${mode === 'login' ? 'রেজিস্টার করুন' : 'লগইন করুন'}</button></p>`;
+  bindProfilePhotoPreview($('#authForm'));
 }
 function ensureAuthDistrictField() { const form = $('#authForm'); if (!form || form.querySelector('[name="district"]') || form.querySelector('[name="name"]')?.hidden) return; const address = form.querySelector('[name="address"]'); address.insertAdjacentHTML('beforebegin', `<select name="district" required><option value="">জেলা নির্বাচন করুন</option>${bangladeshDistricts.map(district => `<option value="${escapeHtml(district)}" ${currentUser?.district === district ? 'selected' : ''}>${escapeHtml(district)}</option>`).join('')}</select>`); }
 function openAuth(mode = 'login') { renderAuth(mode); ensureAuthDistrictField(); openModal('authModal'); }
@@ -2719,7 +2754,9 @@ function renderCustomerDashboard() {
 
         <div class="customer-profile-top">
           <div class="customer-profile-avatar">
-            ${escapeHtml((currentUser.name || 'U').charAt(0).toUpperCase())}
+            ${currentUser.avatar_url
+              ? `<img src="${escapeHtml(currentUser.avatar_url)}" alt="Profile photo">`
+              : escapeHtml((currentUser.name || 'U').charAt(0).toUpperCase())}
           </div>
 
           <div class="customer-profile-identity">
@@ -4297,6 +4334,18 @@ async function handleAdminOrderStatusChange(order, select) {
 
       <form id="profileEditForm" class="stack-form">
 
+        <label class="profile-photo-picker">
+          প্রোফাইল ছবি
+          <input name="profilePhoto" type="file" accept="image/jpeg,image/png,image/webp">
+          <small>JPG, PNG বা WebP · সর্বোচ্চ 5MB</small>
+          <img
+            data-profile-photo-preview
+            alt="Profile photo preview"
+            src="${escapeHtml(currentUser?.avatar_url || '')}"
+            ${currentUser?.avatar_url ? '' : 'hidden'}
+          >
+        </label>
+
         <label>
           নাম
           <input
@@ -4367,6 +4416,7 @@ async function handleAdminOrderStatusChange(order, select) {
       </form>
     `;
 
+    bindProfilePhotoPreview(modal.querySelector('#profileEditForm'));
     return modal;
   }
 
@@ -4406,21 +4456,26 @@ async function handleAdminOrderStatusChange(order, select) {
       return showToast('User ID পাওয়া যায়নি। আবার login করুন।');
     }
 
+    const photoFile = form.querySelector('[name="profilePhoto"]')?.files?.[0];
     const button = form.querySelector('button[type="submit"]');
 
     if (button) {
       button.disabled = true;
-      button.textContent = 'Saving...';
+      button.textContent = photoFile ? 'Photo upload হচ্ছে...' : 'Saving...';
     }
 
     try {
+      const avatarUrl = photoFile
+        ? await uploadProfilePhoto(photoFile, currentUser.id)
+        : currentUser.avatar_url || '';
       const { error } = await client
         .from('profiles')
         .update({
           name,
           phone,
           district,
-          address
+          address,
+          ...(photoFile ? {avatar_url:avatarUrl} : {})
         })
         .eq('id', currentUser.id);
 
@@ -4438,7 +4493,8 @@ async function handleAdminOrderStatusChange(order, select) {
         name,
         phone,
         district,
-        address
+        address,
+        avatar_url:avatarUrl
       };
 
       write('laiba_current_user', currentUser);

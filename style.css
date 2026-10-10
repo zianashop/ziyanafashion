@@ -6882,6 +6882,12 @@ body.ziyana-route-active #overlay{display:none!important}
   font:800 22px var(--heading);
   box-shadow:0 6px 15px rgba(32,35,33,.13);
 }
+.customer-profile-avatar img{width:100%;height:100%;object-fit:cover;border-radius:inherit}
+.profile-photo-picker{display:grid;gap:8px}
+.profile-photo-picker input[type="file"]{width:100%;padding:10px;border:1px solid var(--line);background:#fff;font:inherit;font-size:12px}
+.profile-photo-picker small{color:var(--muted);font-size:11px}
+.profile-photo-picker img{width:76px;height:76px;object-fit:cover;border-radius:50%;border:1px solid var(--line)}
+.profile-photo-picker img[hidden]{display:none}
 
 .customer-profile-identity{
   flex:1;
